@@ -24,7 +24,7 @@ To set up and run this project locally, follow these steps:
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/CHVivek7/URL-Phishing.git](https://github.com/CHVivek7/URL-Phishing.git)
+    git clone https://github.com/CHVivek7/URL-Phishing.git
     cd URL-Phishing
     ```
 2.  **Install dependencies:** (Assuming a `requirements.txt` file exists in your project with all necessary libraries)
@@ -92,7 +92,7 @@ This project is open-source and available under the [MIT License](https://openso
 
 For any questions, feedback, or collaboration opportunities, feel free to reach out to:
 
-* **CHVivek7** - [Your GitHub Profile](https://github.com/CHVivek7)
-* **Email:** [Your Email Address Here] (e.g., vivek.your_email@example.com)
+* **CHVivek7** - (https://github.com/CHVivek7)
+* **Email:** (vivekch1225@gmail.com)
 
 ---
