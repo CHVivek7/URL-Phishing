@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phishing URL Detector</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        /* CSS rules must be properly formatted with selectors */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f5f5f5;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.1);
+        }
+        
+        .progress {
+            height: 30px;
+            margin: 15px 0;
+        }
+        
+        .legitimate-result {
+            background-color: #d4edda;
+            border-left: 5px solid #28a745;
+        }
+        
+        .phishing-result {
+            background-color: #f8d7da;
+            border-left: 5px solid #dc3545;
+        }
+        
+        .error-result {
+            background-color: #fff3cd;
+            border-left: 5px solid #ffc107;
+        }
+        
+        h1 {
+            text-align: center;
+            margin-bottom: 1.5rem;
+        }
+        
+        .form-label {
+            font-weight: 500;
+        }
+        
+        .btn-primary {
+            background-color: #0d6efd;
+            border-color: #0d6efd;
+        }
+        
+        .btn-primary:hover {
+            background-color: #0b5ed7;
+            border-color: #0a58ca;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="mb-4">Phishing URL Detection</h1>
+        
+        <form method="POST" class="mb-4">
+            <div class="mb-3">
+                <label for="url" class="form-label">Enter URL to analyze:</label>
+                <input type="url" class="form-control" id="url" name="url" 
+                       placeholder="https://example.com" required>
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Check URL</button>
+        </form>
+
+        {% if prediction_text %}
+        <div class="p-4 rounded-3 {% if result_class == 'legitimate' %}legitimate-result{% elif result_class == 'phishing' %}phishing-result{% else %}error-result{% endif %}">
+            <h3 class="text-center">{{ prediction_text }}</h3>
+            
+            {% if probabilities %}
+            <div class="mt-4">
+                <div class="progress">
+                    <div class="progress-bar bg-success" 
+                         style="width: {{ probabilities.legitimate }}%">
+                        Legitimate: {{ "%.1f"|format(probabilities.legitimate) }}%
+                    </div>
+                </div>
+                <div class="progress">
+                    <div class="progress-bar bg-danger" 
+                         style="width: {{ probabilities.phishing }}%">
+                        Phishing: {{ "%.1f"|format(probabilities.phishing) }}%
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>
