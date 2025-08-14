@@ -1,4 +1,4 @@
-ujson==5.9.0
+ujson==5.8.0
 altair==5.4.1
 anyio==4.6.2.post1
 argon2-cffi==23.1.0
