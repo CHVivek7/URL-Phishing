@@ -7,8 +7,6 @@ revealing sensitive information such as credentials, personal data, or
 financial details. This tool analyzes various features of URLs and
 classifies them as **legitimate** or **phishing**.
 
-------------------------------------------------------------------------
-
 ## 🚀 Introduction
 
 Phishing attacks are one of the most common cybersecurity threats. To
@@ -16,8 +14,6 @@ counter them, this project applies **machine learning techniques** to
 analyze URLs and detect malicious intent. Features like **HTTPS usage**,
 **anchor tag structure**, and **website traffic data** significantly
 influence classification performance.
-
-------------------------------------------------------------------------
 
 ## ✨ Features
 
@@ -29,8 +25,6 @@ influence classification performance.
     and get instant results.\
 -   📓 **Jupyter Notebook:** Includes data exploration, model building,
     and evaluation.
-
-------------------------------------------------------------------------
 
 ## 🛠️ Installation
 
@@ -55,8 +49,6 @@ Or install commonly used libraries manually:
 pip install flask pandas numpy scikit-learn joblib
 ```
 
-------------------------------------------------------------------------
-
 ## ▶️ Usage
 
 ### Run the Flask Web App
@@ -76,8 +68,6 @@ jupyter notebook
 Open `Phishing_URL_Detection.ipynb` to explore model training and
 analysis.
 
-------------------------------------------------------------------------
-
 ## 🧰 Technologies Used
 
 -   **Python** -- Core programming language\
@@ -86,8 +76,6 @@ analysis.
 -   **Pandas & NumPy** -- Data manipulation and preprocessing\
 -   **Joblib** -- Model saving and loading\
 -   **Jupyter Notebook** -- Research and experimentation
-
-------------------------------------------------------------------------
 
 ## 🤝 Contributing
 
@@ -99,14 +87,10 @@ Contributions are welcome! To contribute:
 4.  Push to your fork\
 5.  Open a Pull Request
 
-------------------------------------------------------------------------
-
 ## 📜 License
 
 This project is licensed under the [MIT
 License](https://opensource.org/licenses/MIT).
-
-------------------------------------------------------------------------
 
 ## 📬 Contact
 
