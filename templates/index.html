@@ -12,6 +12,8 @@
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background-color: #f8f9fa;
             padding: 20px;
+            /* Reserve space for fixed footer to avoid content overlap */
+            padding-bottom: 90px;
         }
         
         .container {
@@ -340,6 +342,15 @@
         </div>
         {% endif %}
     </div>
+
+    <!-- Fixed footer disclaimer -->
+    <footer class="fixed-bottom bg-light border-top">
+        <div class="container py-2">
+            <div class="text-center small text-muted mb-0">
+                📝 Note: This analysis is automated and may have false positives/negatives - use as guidance only.
+            </div>
+        </div>
+    </footer>
 
     <!-- Upload Options Modal -->
     <div class="modal fade" id="uploadModal" tabindex="-1" aria-labelledby="uploadModalLabel" aria-hidden="true">
