@@ -11,7 +11,8 @@ spec.loader.exec_module(mod)
 
 flask_app = getattr(mod, 'app')
 client = flask_app.test_client()
-resp = client.post('/', data={'url': 'https://example.com'})
+# Test the problematic URL with repeated 'w's
+resp = client.post('/', data={'url': 'http://wwww.example.com'})
 print('STATUS:', resp.status_code)
 html = resp.data.decode('utf-8')
 start = html.find('Legitimate:')

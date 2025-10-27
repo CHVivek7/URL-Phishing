@@ -548,6 +548,31 @@
             qrPreview.style.display = 'block';
             qrUploadContainer.style.padding = '5px';
         }
+
+        // Prevent double submission: change button to 'Analyzing...', disable and blacken it
+        const form = document.getElementById('detectionForm');
+        form.addEventListener('submit', function (e) {
+            // If already disabled, prevent further submission
+            if (submitBtn.disabled) {
+                e.preventDefault();
+                return false;
+            }
+            submitText.textContent = 'Analyzing...';
+            submitBtn.disabled = true;
+            // visually blacken the button by switching to btn-dark
+            submitBtn.classList.remove('btn-primary');
+            submitBtn.classList.add('btn-dark');
+            loadingSpinner.style.display = 'inline-block';
+        });
+
+        // When user navigates back to the page or it is restored from bfcache, ensure button is reset
+        window.addEventListener('pageshow', function () {
+            submitText.textContent = 'Analyze URL';
+            submitBtn.disabled = false;
+            submitBtn.classList.remove('btn-dark');
+            submitBtn.classList.add('btn-primary');
+            loadingSpinner.style.display = 'none';
+        });
     </script>
     <script>
         // Disable submit button on form submit to avoid duplicate submissions

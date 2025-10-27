@@ -48,7 +48,8 @@ app.config.update({
         'phishtank': "https://data.phishtank.com/data/online-valid.json",
     },
     'PHISHING_KEYWORDS': ["login", "verify", "secure", "account", "update", "security", "alert"],
-    'RISKY_TLDS': ['.tk', '.gq', '.ml', '.cf', '.xyz', '.top', '.cc', '.pw', '.buzz', '.onion'],
+    # tldextract.suffix returns values without a leading dot (e.g. 'com', 'co.uk', 'onion')
+    'RISKY_TLDS': ['tk', 'gq', 'ml', 'cf', 'xyz', 'top', 'cc', 'pw', 'buzz', 'onion'],
     'BRANDS': ["paypal", "google", "amazon", "microsoft", "apple", "bank", "chase", "wellsfargo"],
     'SHORTENERS': ["bit.ly", "goo.gl", "tinyurl.com", "t.co", "is.gd"],
     'API_TIMEOUT': 5
@@ -71,6 +72,30 @@ def unshorten_url(url):
         return util_unshorten(url)
     except Exception:
         return url
+
+
+def normalize_url(url: str) -> str:
+    """Normalize input URL for consistent parsing and network calls.
+
+    - Strips surrounding whitespace
+    - Adds http:// if scheme missing
+    - Ensures scheme is lowercase
+    - Returns the normalized string
+    """
+    if not isinstance(url, str):
+        return url
+    u = url.strip()
+    if u == '':
+        return u
+    # Add scheme if missing
+    if not u.lower().startswith(('http://', 'https://')):
+        u = 'http://' + u
+    # normalize scheme casing
+    parts = u.split('://', 1)
+    if len(parts) == 2:
+        scheme, rest = parts
+        u = scheme.lower() + '://' + rest
+    return u
 
 def check_phish_tank(url):
     """Check PhishTank database"""
@@ -95,7 +120,8 @@ def generate_darkweb_report(url):
     decoded_domain = urlparse(decoded_url).netloc.lower()
 
     report = {
-        "is_onion": ext.suffix == ".onion",
+        # ext.suffix returns 'onion' for .onion addresses
+        "is_onion": ext.suffix == "onion" or parsed.netloc.lower().endswith('.onion'),
         "in_phish_tank": check_phish_tank(url),
         "has_percent_encoding": '%' in url,
         "suspicious_keywords": [
@@ -110,12 +136,15 @@ def generate_darkweb_report(url):
             brand: difflib.SequenceMatcher(None, decoded_domain, brand).ratio()
             for brand in app.config['BRANDS']
         },
-        "risky_tld": ext.suffix in app.config['RISKY_TLDS'],
+    "risky_tld": ext.suffix in app.config['RISKY_TLDS'],
         "is_shortened": any(
             shortener in domain 
             for shortener in app.config['SHORTENERS']
         )
     }
+    # detect suspicious repeated 'w' subdomains like 'wwww.example.com' or 'www.www.example.com'
+    labels = domain.split('.')
+    report['suspicious_www_repeat'] = any(re.match(r'^w{4,}$', lbl) or lbl.startswith('www') and domain.count('www')>1 for lbl in labels)
 
     report_lines = [f"🔍 **Threat Report for `{url}`**"]
     
@@ -144,6 +173,8 @@ def generate_darkweb_report(url):
         report_lines.append("⚠️ **Shortened URL** (may hide malicious destination)")
     if report.get("has_percent_encoding"):
         report_lines.append("⚠️ **Obfuscated URL** (percent-encoding detected in URL)")
+    if report.get('suspicious_www_repeat'):
+        report_lines.append("⚠️ **Suspicious subdomain**: repeated 'w' or malformed www (example: 'wwww.example.com')")
     # If decoded domain is very similar to a brand but not the brand's real domain, flag it
     similar = [b for b, r in report.get('brand_similarity', {}).items() if r >= 0.75]
     for b in similar:
@@ -196,11 +227,20 @@ def is_high_risk_url(url):
         ratio = difflib.SequenceMatcher(None, decoded_domain, brand).ratio()
         if ratio >= 0.80 and not decoded_domain.endswith(f"{brand}.com"):
             return True
+    # 9. Suspicious repeated 'w' subdomain (e.g., 'wwww.example.com' or 'www.www.example.com')
+    labels = decoded_domain.split('.')
+    for lbl in labels:
+        if re.match(r'^w{4,}$', lbl):
+            return True
+    if decoded_domain.count('www') > 1:
+        return True
     
     return False
 
 def extract_features(url):
     """Enhanced feature extraction with unshortening"""
+    # Normalize URL to ensure validators and tldextract handle it correctly
+    url = normalize_url(url)
     if not validators.url(url):
         raise ValueError("Invalid URL format")
     
@@ -330,7 +370,8 @@ def index():
                                 result_class='error')
 
         try:
-            # Resolve short links early and analyze the final destination
+            # Normalize input and resolve short links early to analyze the final destination
+            url = normalize_url(url)
             final_url = unshorten_url(url)
 
             # Prepare intel variable (may be None if API key missing)
