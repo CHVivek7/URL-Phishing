@@ -1,6 +1,6 @@
 # 🚨 URL Phishing Detector — Machine Learning Powered
 
-[Live Demo](https://url-phishing-qddg.onrender.com/) • [Repository](https://github.com/CHVivek7/URL-Phishing) • License: MIT
+[Live Demo](https://url-phishing-qddg.onrender.com/) License: MIT
 
 A fast, easy-to-use machine learning system to detect phishing URLs. It extracts meaningful URL and webpage features, feeds them into trained classifiers, and predicts whether a URL is legitimate or phishing — all wrapped in a friendly Flask web interface and an exploratory Jupyter notebook.
 
