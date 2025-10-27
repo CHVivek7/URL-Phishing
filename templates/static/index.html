@@ -191,6 +191,14 @@
         .result-container {
             animation: fadeIn 0.5s ease-out;
         }
+
+        .btn-disabled-black {
+            background-color: #000 !important;
+            border-color: #000 !important;
+            color: #fff !important;
+            opacity: 0.95;
+            pointer-events: none;
+        }
         
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
@@ -237,29 +245,97 @@
 
         {% if prediction_text %}
         <div class="p-4 rounded-3 {% if result_class == 'legitimate' %}legitimate-result{% elif result_class == 'phishing' %}phishing-result{% else %}error-result{% endif %}">
-            <h3 class="text-center">{{ prediction_text }}</h3>
-            
-            {% if probabilities %}
-            <div class="mt-4">
-                <div class="progress">
-                    <div class="progress-bar bg-success" 
-                         style="width: {{ probabilities.legitimate }}%">
-                        Legitimate: {{ "%.1f"|format(probabilities.legitimate) }}%
-                    </div>
-                </div>
-                <div class="progress">
-                    <div class="progress-bar bg-danger" 
-                         style="width: {{ probabilities.phishing }}%">
-                        Phishing: {{ "%.1f"|format(probabilities.phishing) }}%
-                    </div>
-                </div>
-                <div class="mt-2">
-                    <small class="text-muted">{{ probabilities.legitimate_message }}</small>
-                </div>
-                {% if darkweb_output %}
-                    <pre class="darkweb-report">{{ darkweb_output }}</pre>
-                    {% endif %}
+            <h3 class="text-center">✅ URL Analysis Complete!</h3>
+
+            {% if summary_text %}
+                <!-- <pre class="darkweb-report">{{ summary_text }}</pre> -->
+                 {% if final_url %}
+            <div class="mt-2">
+                <span style="white-space:nowrap;"><strong>🔗 Final URL:</strong> <span style="color:#000; text-decoration:none;">{{ final_url }}</span></span>
             </div>
+            {% endif %}
+                {# Show progress bars under the summary text as well when probabilities are present #}
+                {% if probabilities %}
+                <div class="mt-3">
+                    {% set phish_conf = probabilities.phishing %}
+                    {% set legit_conf = probabilities.legitimate %}
+                    <div class="mb-1"><small>Legitimate: {{ "%.1f"|format(legit_conf) }}%</small></div>
+                    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ legit_conf }}">
+                        <div class="progress-bar bg-success" style="width: {{ legit_conf }}%;">{{ "%.1f"|format(legit_conf) }}%</div>
+                    </div>
+
+                    <div class="mt-2 mb-1"><small>Phishing: {{ "%.1f"|format(phish_conf) }}%</small></div>
+                    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ phish_conf }}">
+                        <div class="progress-bar bg-danger" style="width: {{ phish_conf }}%;">{{ "%.1f"|format(phish_conf) }}%</div>
+                    </div>
+                </div>
+                {% endif %}
+            {% endif %}
+
+            {# Always show structured intel fields when available for clarity #}
+            {% if intel %}
+            <div class="mt-3 p-3" style="background:#fff3f3;border:1px solid #f5c2c7;border-radius:6px;">
+                <h5>💀 Threat Intelligence (Details)</h5>
+                <ul>
+                    <li><strong>Danger Score:</strong> {{ intel.danger_score }}/10 ({{ intel.descriptor }})</li>
+                    <li><strong>Estimated Impact:</strong> Flagged by {{ intel.positives }} / {{ intel.total }} security vendors</li>
+                    {% if intel.first_seen %}<li><strong>First Seen:</strong> {{ intel.first_seen }}</li>{% endif %}
+                    {% if intel.last_seen %}<li><strong>Last Seen:</strong> {{ intel.last_seen }}</li>{% endif %}
+                </ul>
+            </div>
+            {% endif %}
+
+            {% if not summary_text %}
+            {% if final_url %}
+            <div class="mt-2">
+                <strong>🔗 Final URL:</strong>
+                <div><a href="{{ final_url }}" target="_blank">{{ final_url }}</a></div>
+            </div>
+            {% endif %}
+
+                {% if probabilities %}
+            <div class="mt-3">
+                {# Show detection label and a visual progress bar for each class instead of only numeric text #}
+                {% set phish_conf = probabilities.phishing %}
+                {% set legit_conf = probabilities.legitimate %}
+                {% if result_class == 'phishing' %}
+                    <div>🤖 Phishing Detection: <strong>**LIKELY PHISHING**</strong></div>
+                {% else %}
+                    <div>🤖 Phishing Detection: <strong>**LIKELY LEGITIMATE**</strong></div>
+                {% endif %}
+
+                <div class="mt-2">
+                    <div class="mb-1"><small>Legitimate: {{ "%.1f"|format(legit_conf) }}%</small></div>
+                    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ legit_conf }}">
+                        <div class="progress-bar bg-success" style="width: {{ legit_conf }}%;">{{ "%.1f"|format(legit_conf) }}%</div>
+                    </div>
+
+                    <div class="mt-2 mb-1"><small>Phishing: {{ "%.1f"|format(phish_conf) }}%</small></div>
+                    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ phish_conf }}">
+                        <div class="progress-bar bg-danger" style="width: {{ phish_conf }}%;">{{ "%.1f"|format(phish_conf) }}%</div>
+                    </div>
+                </div>
+
+                {% if intel %}
+                <div class="mt-3">
+                    <div>💀 Threat Intelligence:</div>
+                    <ul>
+                        <li>Danger Score: {{ intel.danger_score }}/10 ({{ intel.descriptor }})</li>
+                        <li>Estimated Impact: Flagged by {{ intel.positives }}/{{ intel.total }} security vendors.</li>
+                        {% if intel.first_seen %}<li>First Seen: {{ intel.first_seen }}</li>{% endif %}
+                    </ul>
+                </div>
+                {% elif darkweb_report %}
+                <pre class="darkweb-report">{{ darkweb_report }}</pre>
+                {% endif %}
+
+                {% if result_class == 'phishing' or (intel and intel.danger_score and intel.danger_score >= 7) %}
+                <div class="mt-3">
+                    <strong>⚠️ Warning:</strong> This URL has a strong association with known malicious activity.
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
             {% endif %}
         </div>
         {% endif %}
@@ -472,6 +548,42 @@
             qrPreview.style.display = 'block';
             qrUploadContainer.style.padding = '5px';
         }
+    </script>
+    <script>
+        // Disable submit button on form submit to avoid duplicate submissions
+        (function(){
+            const form = document.getElementById('detectionForm');
+            const submitBtn = document.getElementById('submitBtn');
+            const submitText = document.getElementById('submitText');
+            const loadingSpinner = document.getElementById('loadingSpinner');
+            if (form && submitBtn) {
+                form.addEventListener('submit', function(e){
+                    try {
+                        // change text
+                        submitText.innerText = 'Analyzing...';
+                        // show spinner
+                        if (loadingSpinner) loadingSpinner.style.display = 'inline-block';
+                        // visually blacken and disable
+                        submitBtn.classList.add('btn-disabled-black');
+                        submitBtn.setAttribute('disabled','disabled');
+                    } catch (err) {
+                        console.error('Error disabling submit button', err);
+                    }
+                });
+
+                // When the page is shown (back navigation or after server response), reset button
+                window.addEventListener('pageshow', function() {
+                    try {
+                        submitBtn.classList.remove('btn-disabled-black');
+                        submitBtn.removeAttribute('disabled');
+                        submitText.innerText = 'Analyze URL';
+                        if (loadingSpinner) loadingSpinner.style.display = 'none';
+                    } catch (err) {
+                        // ignore
+                    }
+                });
+            }
+        })();
     </script>
 </body>
 </html>

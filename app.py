@@ -2,10 +2,42 @@ from flask import Flask, render_template, request
 import joblib
 import pandas as pd
 import numpy as np
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 import tldextract
 import validators
 import requests
+import difflib
+import os
+try:
+    from dotenv import load_dotenv
+    HAS_DOTENV = True
+except Exception:
+    HAS_DOTENV = False
+
+# Load .env from project root (if python-dotenv is installed), otherwise fall back to manual parsing
+if HAS_DOTENV:
+    try:
+        load_dotenv()  # loads .env in project root if exists
+        load_dotenv(os.path.join(os.path.dirname(__file__), 'utils', '.env'))
+    except Exception:
+        pass
+else:
+    # Fallback: parse utils/.env manually if it's present and the var not already set
+    env_path = os.path.join(os.path.dirname(__file__), 'utils', '.env')
+    if os.path.exists(env_path) and not os.environ.get('VIRUSTOTAL_API_KEY'):
+        try:
+            with open(env_path, 'r') as f:
+                for line in f:
+                    if '=' not in line or line.strip().startswith('#'):
+                        continue
+                    k, v = line.strip().split('=', 1)
+                    if k and not os.environ.get(k):
+                        os.environ[k] = v
+        except Exception:
+            pass
+
+from utils.qr_unshorten import decode_qr_from_file, unshorten_url as util_unshorten, is_shortened
+from utils.threat_intel import check_url_virustotal, calculate_danger_score
 import re
 
 app = Flask(__name__)
@@ -34,13 +66,11 @@ except Exception as e:
     raise Exception(f"Error loading model: {str(e)}")
 
 def unshorten_url(url):
-    """Follow redirects to get final URL"""
+    """Wrapper that uses utils implementation to follow redirects and resolve short URLs."""
     try:
-        session = requests.Session()
-        resp = session.head(url, allow_redirects=True, timeout=5)
-        return resp.url
-    except:
-        return url  # Return original if unshortening fails
+        return util_unshorten(url)
+    except Exception:
+        return url
 
 def check_phish_tank(url):
     """Check PhishTank database"""
@@ -60,9 +90,14 @@ def generate_darkweb_report(url):
     domain = parsed.netloc.lower()
     ext = tldextract.extract(url)
     
+    # Detect percent-encoding obfuscation and brand similarity checks
+    decoded_url = unquote(url)
+    decoded_domain = urlparse(decoded_url).netloc.lower()
+
     report = {
         "is_onion": ext.suffix == ".onion",
         "in_phish_tank": check_phish_tank(url),
+        "has_percent_encoding": '%' in url,
         "suspicious_keywords": [
             kw for kw in app.config['PHISHING_KEYWORDS'] 
             if kw in domain
@@ -71,6 +106,10 @@ def generate_darkweb_report(url):
             brand in domain and not domain.endswith(f"{brand}.com")
             for brand in app.config['BRANDS']
         ),
+        "brand_similarity": {
+            brand: difflib.SequenceMatcher(None, decoded_domain, brand).ratio()
+            for brand in app.config['BRANDS']
+        },
         "risky_tld": ext.suffix in app.config['RISKY_TLDS'],
         "is_shortened": any(
             shortener in domain 
@@ -103,7 +142,13 @@ def generate_darkweb_report(url):
     
     if report["is_shortened"]:
         report_lines.append("⚠️ **Shortened URL** (may hide malicious destination)")
-    
+    if report.get("has_percent_encoding"):
+        report_lines.append("⚠️ **Obfuscated URL** (percent-encoding detected in URL)")
+    # If decoded domain is very similar to a brand but not the brand's real domain, flag it
+    similar = [b for b, r in report.get('brand_similarity', {}).items() if r >= 0.75]
+    for b in similar:
+        if not domain.endswith(f"{b}.com"):
+            report_lines.append(f"⚠️ **Brand-Spoofing**: domain similar to {b} (similarity={report['brand_similarity'][b]:.2f})")
     if len(report_lines) == 1:
         report_lines.append("✅ No explicit threats detected in databases")
 
@@ -111,7 +156,9 @@ def generate_darkweb_report(url):
 
 def is_high_risk_url(url):
     """Rule-based pre-check before model prediction"""
-    domain = urlparse(url).netloc.lower()
+    # Normalize and decode percent-encodings for checks
+    decoded = unquote(url)
+    domain = urlparse(decoded).netloc.lower()
     ext = tldextract.extract(url)
     
     # 1. Check risky TLDs (including .onion)
@@ -138,6 +185,17 @@ def is_high_risk_url(url):
     # 6. Explicit .onion check
     if '.onion' in domain:
         return True
+
+    # 7. Percent-encoding obfuscation
+    if '%' in url:
+        return True
+
+    # 8. Brand similarity (fuzzy match) - flag if high similarity but not actual brand domain
+    decoded_domain = urlparse(unquote(url)).netloc.lower()
+    for brand in app.config['BRANDS']:
+        ratio = difflib.SequenceMatcher(None, decoded_domain, brand).ratio()
+        if ratio >= 0.80 and not decoded_domain.endswith(f"{brand}.com"):
+            return True
     
     return False
 
@@ -167,52 +225,217 @@ def extract_features(url):
     
     return pd.DataFrame([features], columns=feature_names)
 
+
+def run_threat_intel(final_url):
+    """Query configured threat intel (VirusTotal if key present) and compute danger score."""
+    vt = check_url_virustotal(final_url)
+    if not vt:
+        return None
+
+    positives = vt.get('positives', 0)
+    total = vt.get('total', 0)
+    first = vt.get('first_seen')
+    last = vt.get('last_seen')
+    score = calculate_danger_score(positives, total, first, last)
+
+    descriptor = 'Unknown'
+    if score >= 9:
+        descriptor = 'Critical Risk'
+    elif score >= 7:
+        descriptor = 'High Risk'
+    elif score >= 4:
+        descriptor = 'Medium Risk'
+    else:
+        descriptor = 'Low Risk'
+
+    return {
+        'danger_score': score,
+        'positives': positives,
+        'total': total,
+        'first_seen': first,
+        'last_seen': last,
+        'descriptor': descriptor
+    }
+
+
+def adjust_intel_for_display(intel, result_class):
+    """Adjust intel dict for display rules:
+    - If legitimate: show danger < 3 and hide threat counts (but keep first_seen).
+    - If phishing: add +2 to danger score and apply modulo 10; map 0 to 10.
+    Returns a new dict safe for template rendering.
+    """
+    if not intel:
+        return None
+
+    # copy to avoid mutating original
+    it = dict(intel)
+
+    try:
+        score = int(it.get('danger_score', 0))
+    except Exception:
+        score = 0
+
+    if result_class == 'legitimate':
+        # cap to less than 3
+        if score >= 3:
+            it['danger_score'] = 2
+        else:
+            it['danger_score'] = score if score > 0 else 1
+        # hide vendor counts and descriptor
+        it['positives'] = 0
+        it['total'] = 0
+        it['descriptor'] = 'Low Risk'
+        # keep first_seen/last_seen as-is
+        return it
+
+    if result_class == 'phishing':
+        # add +2 and apply modulo 10
+        new_score = (score + 2) % 10
+        if new_score == 0:
+            new_score = 10
+        it['danger_score'] = new_score
+        # update descriptor based on new score
+        if new_score >= 9:
+            it['descriptor'] = 'Critical Risk'
+        elif new_score >= 7:
+            it['descriptor'] = 'High Risk'
+        elif new_score >= 4:
+            it['descriptor'] = 'Medium Risk'
+        else:
+            it['descriptor'] = 'Low Risk'
+        return it
+
+    return it
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
         url = request.form.get('url', '').strip()
-        
+
+        # If an image was uploaded (from QR capture), try to decode server-side
+        try:
+            if 'qrImage' in request.files:
+                f = request.files.get('qrImage')
+                if f and getattr(f, 'filename', ''):
+                    decoded = decode_qr_from_file(f.stream or f)
+                    if decoded:
+                        url = decoded.strip()
+        except Exception:
+            # Non-fatal: continue with the provided URL
+            pass
+
         if not url:
             return render_template('index.html', 
                                 prediction_text="Please enter a URL",
                                 result_class='error')
-        
+
         try:
-            # Rule-based pre-check
-            if is_high_risk_url(url):
+            # Resolve short links early and analyze the final destination
+            final_url = unshorten_url(url)
+
+            # Prepare intel variable (may be None if API key missing)
+            intel = None
+
+            # Rule-based pre-check on final (unshortened) URL. Presence of a shortener
+            # will be reported but does not by itself mark the URL as phishing.
+            if is_high_risk_url(final_url):
+                intel = run_threat_intel(final_url)
+                darkweb_report = generate_darkweb_report(final_url)
+                # adjust intel according to display rules (rule-based branch is phishing)
+                intel = adjust_intel_for_display(intel, 'phishing')
+
+                # Build exact summary text block
+                pred_label = 'LIKELY PHISHING'
+                confidence = 90
+                summary_lines = [
+                    '✅ URL Analysis Complete!',
+                    '',
+                    f'🔗 Final URL: {final_url}',
+                    f'🤖 Phishing Detection: **{pred_label}** ({confidence}% confidence)',
+                    '💀 Threat Intelligence:'
+                ]
+                if intel:
+                    summary_lines.append(f"   - Danger Score: {intel['danger_score']}/10 ({intel['descriptor']})")
+                    summary_lines.append(f"   - Estimated Impact: Flagged by {intel['positives']}/{intel['total']} security vendors.")
+                    if intel.get('first_seen'):
+                        summary_lines.append(f"   - First Seen: {intel.get('first_seen')[:10]}")
+                else:
+                    summary_lines.append('   - Danger Score: Unknown')
+                    summary_lines.append('   - Estimated Impact: Unknown')
+
+                # Warning line
+                summary_lines.append('⚠️ Warning: This URL has a strong association with known malicious activity.')
+                summary_text = "\n".join(summary_lines)
+
                 return render_template('index.html',
                                     prediction_text="Warning! Phishing URL detected",
                                     result_class='phishing',
                                     probabilities={'legitimate': 10, 'phishing': 90},
-                                    darkweb_output=generate_darkweb_report(url))
-            
+                                    darkweb_report=darkweb_report,
+                                    intel=intel,
+                                    final_url=final_url,
+                                    summary_text=summary_text)
+
             # Model prediction
-            features = extract_features(url)
+            features = extract_features(final_url)
             features_imputed = imputer.transform(features)
             features_scaled = scaler.transform(features_imputed)
             features_selected = selector.transform(features_scaled)
-            
+
             proba = model.predict_proba(features_selected)[0]
             prediction = model.predict(features_selected)[0]
-            
+
             # Prepare response
             probabilities = {
                 'legitimate': round(proba[0]*100, 1),
                 'phishing': round(proba[1]*100, 1)
             }
-            
+
             result_class = 'legitimate' if prediction == 0 else 'phishing'
             prediction_text = "This URL appears to be legitimate" if prediction == 0 else "Warning! Phishing URL detected"
-            
+
             # Generate report for phishing URLs
-            darkweb_output = generate_darkweb_report(url) if prediction == 1 else None
-            
+            darkweb_report = generate_darkweb_report(final_url) if prediction == 1 else None
+
+            # Run threat intelligence (if key configured)
+            intel = run_threat_intel(final_url)
+            # Adjust intel display according to model prediction
+            intel = adjust_intel_for_display(intel, result_class)
+
+            # Build exact summary text block to match requested format
+            pred_label = 'LIKELY PHISHING' if result_class == 'phishing' else 'LIKELY LEGITIMATE'
+            conf_val = int(round(probabilities['phishing'])) if result_class == 'phishing' else int(round(probabilities['legitimate']))
+            summary_lines = [
+                '✅ URL Analysis Complete!',
+                '',
+                f'🔗 Final URL: {final_url}',
+                f'🤖 Phishing Detection: **{pred_label}** ({conf_val}% confidence)',
+                '💀 Threat Intelligence:'
+            ]
+            if intel:
+                summary_lines.append(f"   - Danger Score: {intel['danger_score']}/10 ({intel['descriptor']})")
+                summary_lines.append(f"   - Estimated Impact: Flagged by {intel['positives']}/{intel['total']} security vendors.")
+                if intel.get('first_seen'):
+                    summary_lines.append(f"   - First Seen: {intel['first_seen'][:10]}")
+            else:
+                summary_lines.append('   - Danger Score: Unknown')
+                summary_lines.append('   - Estimated Impact: Unknown')
+
+            warn = (result_class == 'phishing') or (intel and intel.get('danger_score') and intel.get('danger_score') >= 7)
+            if warn:
+                summary_lines.append('⚠️ Warning: This URL has a strong association with known malicious activity.')
+
+            summary_text = "\n".join(summary_lines)
+
             return render_template('index.html',
                                 prediction_text=prediction_text,
                                 result_class=result_class,
                                 probabilities=probabilities,
-                                darkweb_output=darkweb_output)
-            
+                                darkweb_report=darkweb_report,
+                                intel=intel,
+                                final_url=final_url,
+                                summary_text=summary_text)
+
         except Exception as e:
             return render_template('index.html',
                                 prediction_text=f"Error: {str(e)}",

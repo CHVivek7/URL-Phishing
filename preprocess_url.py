@@ -5,8 +5,13 @@ import numpy as np
 
 def preprocess_url(url):
     """Extract 25 phishing detection features from URL"""
+    from urllib.parse import unquote
+
+    # Normalize and decode percent-encoding obfuscation
     if not url.startswith(('http://', 'https://')):
         url = 'http://' + url
+    decoded = unquote(url)
+    url = decoded
     
     features = []
     parsed = urllib.parse.urlparse(url)
@@ -23,6 +28,9 @@ def preprocess_url(url):
     # Feature 3: URL Shortening
     shorteners = ["bit.ly", "goo.gl", "tinyurl.com", "is.gd", "t.co"]
     features.append(-1 if any(s in domain for s in shorteners) else 1)
+
+    # Feature X: Percent-encoding obfuscation
+    features.append(-1 if '%' in parsed.path or '%' in parsed.netloc else 1)
     
     # Feature 4: @ Symbol
     features.append(-1 if "@" in url else 1)

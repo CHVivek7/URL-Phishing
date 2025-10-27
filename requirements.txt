@@ -6,3 +6,8 @@ scikit-learn
 frozen-flask
 tldextract
 validators
+Pillow
+pyzbar
+opencv-python
+requests
+python-dotenv
