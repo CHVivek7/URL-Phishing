@@ -39,6 +39,10 @@ else:
 from utils.qr_unshorten import decode_qr_from_file, unshorten_url as util_unshorten, is_shortened
 from utils.threat_intel import check_url_virustotal, calculate_danger_score
 import re
+import joblib
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
 
 app = Flask(__name__)
 
@@ -47,13 +51,27 @@ app.config.update({
     'THREAT_FEEDS': {
         'phishtank': "https://data.phishtank.com/data/online-valid.json",
     },
-    'PHISHING_KEYWORDS': ["login", "verify", "secure", "account", "update", "security", "alert"],
+    'PHISHING_KEYWORDS': [
+        "login", "verify", "secure", "account", "update", "security", "alert",
+    "refund", "renew", "renewal", "subscription", "cashback", "urgent", "payment", "support", "verification"
+    ],
     # tldextract.suffix returns values without a leading dot (e.g. 'com', 'co.uk', 'onion')
     'RISKY_TLDS': ['tk', 'gq', 'ml', 'cf', 'xyz', 'top', 'cc', 'pw', 'buzz', 'onion'],
-    'BRANDS': ["paypal", "google", "amazon", "microsoft", "apple", "bank", "chase", "wellsfargo"],
+    'BRANDS': [
+        "paypal", "google", "amazon", "microsoft", "apple", "bank", "chase", "wellsfargo",
+        "paytm", "flipkart", "netflix", "phonepe", "googlepay", "axis", "sbi", "oksbi", "ybl"
+    ],
     'SHORTENERS': ["bit.ly", "goo.gl", "tinyurl.com", "t.co", "is.gd"],
     'API_TIMEOUT': 5
 })
+# Trusted UPI payee addresses (example entries). Empty by default.
+app.config['UPI_TRUSTED_PA'] = []
+# Try to load a trained UPI model if present (upi_model.pkl)
+try:
+    upi_model = joblib.load('upi_model.pkl')
+    app.config['UPI_MODEL'] = upi_model
+except Exception:
+    app.config['UPI_MODEL'] = None
 
 # Load the trained model
 try:
@@ -96,6 +114,144 @@ def normalize_url(url: str) -> str:
         scheme, rest = parts
         u = scheme.lower() + '://' + rest
     return u
+
+
+def parse_upi_uri(uri: str) -> dict:
+    """Parse a UPI URI like:
+    upi://pay?pa=7989200801@ybl&pn=Name&mc=0000&mode=02&purpose=00
+    Returns a dict of decoded query params (pa, pn, mc, mode, purpose, etc.).
+    """
+    try:
+        if not isinstance(uri, str):
+            return {}
+        # ensure we don't prefix with http:// here
+        parsed = urlparse(uri)
+        # query may be in parsed.query; if scheme is missing parse as-is
+        query = parsed.query or (uri.split('?', 1)[1] if '?' in uri else '')
+        from urllib.parse import parse_qs, unquote
+        qs = parse_qs(query, keep_blank_values=True)
+        # flatten qs values and decode
+        out = {k: unquote(v[0]) if isinstance(v, list) and v else '' for k, v in qs.items()}
+        return out
+    except Exception:
+        return {}
+
+
+def is_upi_brand_spoof(parsed_upi: dict) -> bool:
+    """Detect obvious brand-spoofing patterns in a parsed UPI URI.
+
+    Heuristics used:
+    - Normalize pa/pn and split into tokens (remove punctuation except @ and .)
+    - If a known brand token appears in tokens AND any suspicious token (refund/support/verify/renew/etc.)
+      or hyphenated local-parts or long digit sequences appear, flag as brand-spoof.
+    - Use fuzzy match on payee name (pn) vs brand if exact matches not found.
+    """
+    try:
+        if not parsed_upi:
+            return False
+        pa = (parsed_upi.get('pa') or '').strip().lower()
+        pn = (parsed_upi.get('pn') or '').strip().lower()
+        if not pa and not pn:
+            return False
+
+        # Normalize tokens: keep alphanum and @ . - as separators
+        pa_norm = re.sub(r'[^a-z0-9@.\-]', ' ', pa)
+        pn_norm = re.sub(r'[^a-z0-9 ]', ' ', pn)
+
+        pa_tokens = set(pa_norm.replace('@', ' ').replace('.', ' ').split())
+        pn_tokens = set(pn_norm.split())
+        tokens = pa_tokens.union(pn_tokens)
+
+        brands = app.config.get('BRANDS', [])
+        suspicious_keywords = ['refund', 'support', 'help', 'secure', 'verify', 'renew', 'subscription', 'payment', 'account']
+
+        for brand in brands:
+            if brand in tokens or any(tok == brand for tok in tokens):
+                # immediate suspicious keywords
+                if any(sk in pa or sk in pn for sk in suspicious_keywords):
+                    return True
+                # hyphenated local part (e.g., amazon-refund@paytm)
+                local = pa.split('@')[0] if pa else ''
+                if '-' in local or re.search(r'\d{3,}', local):
+                    return True
+                # fuzzy match on payee name
+                if pn and difflib.SequenceMatcher(None, pn, brand).ratio() >= 0.80 and not pn.endswith(f"{brand}.com"):
+                    return True
+        return False
+    except Exception:
+        return False
+
+
+def assess_upi_risk(parsed_upi: dict, trusted: bool=False) -> dict:
+    """Rule-based assessment for UPI payment URIs.
+    Returns a dict with 'phishing' and 'legitimate' percentages (0-100).
+    This is heuristic and intended to give the user a quick indication.
+    """
+    # If a trained UPI model exists, use it
+    model = app.config.get('UPI_MODEL')
+    # Use a dedicated helper for robust UPI brand-spoof detection (normalization + fuzzy checks)
+    try:
+        if is_upi_brand_spoof(parsed_upi):
+            return {'phishing': 99.0, 'legitimate': 1.0}
+    except Exception:
+        # if helper fails for any reason, continue to model/heuristics
+        pass
+    if model is not None:
+        # Build feature vector in the same order used for training
+        pa = (parsed_upi.get('pa') or '').strip()
+        pn = (parsed_upi.get('pn') or '').strip()
+        raw = ' '.join(parsed_upi.values())
+        features = []
+        features.append(1 if pa else 0)                      # pa_present
+        features.append(len(pn))                             # pn_length
+        features.append(1 if '%' in raw or '+' in raw else 0) # has_encoded
+        features.append(len([c for c in pa if not c.isalnum() and c not in ['@','_','-','.']])) # special_char_count
+        features.append(1 if pa and pa.replace('@','').isdigit() else 0) # pa_numeric
+        features.append(1 if any(kw in pn.lower() for kw in app.config.get('PHISHING_KEYWORDS', [])) else 0)
+        features.append(len(raw))                            # raw_length
+        # brand_spoof feature: 1 if obvious brand-spoof detected, 0 otherwise
+        try:
+            features.append(1 if is_upi_brand_spoof(parsed_upi) else 0)
+        except Exception:
+            features.append(0)
+        import numpy as _np
+        X = _np.array([features])
+        try:
+            prob = model.predict_proba(X)[0]
+            phish_prob = round(float(prob[1])*100, 1)
+            legit_prob = round(float(prob[0])*100, 1)
+            return {'phishing': phish_prob, 'legitimate': legit_prob}
+        except Exception:
+            # fallback to heuristics on failure
+            pass
+
+    # Fallback: use previous heuristics
+    phish_score = 0
+
+    if trusted:
+        phish_score = 3
+    pa = (parsed_upi.get('pa') or '').strip()
+    pn = (parsed_upi.get('pn') or '').strip().lower()
+    raw = ' '.join(parsed_upi.values())
+
+    if not pa:
+        phish_score += 30
+    if len(raw) > 120:
+        phish_score += 10
+    if '%' in raw or '+' in raw:
+        phish_score += 8
+    if pa and pa.replace('@','').isdigit():
+        phish_score += 6
+    for kw in app.config.get('PHISHING_KEYWORDS', []):
+        if kw in pn:
+            phish_score += 15
+    if any(ch in pa for ch in ['$', '!', '*', '(']):
+        phish_score += 8
+
+    phish_score = max(0, min(95, phish_score))
+    phish_prob = round(phish_score, 1)
+    legit_prob = round(100 - phish_prob, 1)
+    return {'phishing': phish_prob, 'legitimate': legit_prob}
 
 def check_phish_tank(url):
     """Check PhishTank database"""
@@ -368,6 +524,89 @@ def index():
             return render_template('index.html', 
                                 prediction_text="Please enter a URL",
                                 result_class='error')
+
+        # Special-case common non-HTTP schemes (UPI URIs, mailto, tel, etc.).
+        # These are not web URLs and shouldn't be force-prefixed with http:// nor
+        # sent through the URL classifier pipeline which expects http/https.
+        lower_url = url.lower()
+        if lower_url.startswith('upi://') or lower_url.startswith('mailto:') or lower_url.startswith('tel:'):
+            final_url = url.strip()
+
+            # If it's a UPI URI, parse fields for clearer UI and optional trust checks
+            parsed_upi = None
+            upi_trusted = False
+            if lower_url.startswith('upi://'):
+                parsed_upi = parse_upi_uri(final_url)
+                pa = parsed_upi.get('pa')
+                if pa and pa in app.config.get('UPI_TRUSTED_PA', []):
+                    upi_trusted = True
+
+            # Quick check at request-time: brand-spoofing pattern in parsed UPI
+            brand_spoof = False
+            if parsed_upi:
+                try:
+                    brand_spoof = is_upi_brand_spoof(parsed_upi)
+                except Exception:
+                    brand_spoof = False
+            if brand_spoof:
+                # immediately render as high-confidence phishing for UX clarity
+                upi_probs = {'phishing': 95.0, 'legitimate': 5.0}
+                return render_template('index.html',
+                                       prediction_text='UPI payment URI detected — possible brand-spoof (high risk)',
+                                       result_class='phishing',
+                                       probabilities=upi_probs,
+                                       darkweb_report=None,
+                                       intel=None,
+                                       final_url=final_url,
+                                       parsed_upi=parsed_upi,
+                                       upi_trusted=upi_trusted)
+
+            # Choose a clearer prediction text depending on trust
+            if lower_url.startswith('upi://'):
+                if upi_trusted:
+                    pred_text = 'UPI payment URI detected — trusted payee'
+                    result_cls = 'legitimate'
+                else:
+                    pred_text = 'UPI payment URI detected — verify payee details'
+                    result_cls = 'error'
+            else:
+                pred_text = 'Detected non-web URI (mailto/tel)'
+                result_cls = 'legitimate'
+
+            # compute UPI heuristics probabilities (or model-based) and decide result label
+            upi_probs = None
+            if parsed_upi:
+                upi_probs = assess_upi_risk(parsed_upi, upi_trusted)
+
+            # Set result class based on computed probabilities if available
+            if upi_probs:
+                try:
+                    phish_p = float(upi_probs.get('phishing', 0))
+                except Exception:
+                    phish_p = 0.0
+
+                # If phishing probability is high, mark as phishing; otherwise legitimate.
+                if phish_p >= 50.0:
+                    result_cls = 'phishing'
+                    pred_text = f"UPI payment URI detected — {phish_p:.1f}% phishing probability"
+                else:
+                    # trusted overrides low phishing probability
+                    if upi_trusted:
+                        result_cls = 'legitimate'
+                        pred_text = 'UPI payment URI detected — trusted payee'
+                    else:
+                        result_cls = 'legitimate'
+                        pred_text = f"UPI payment URI detected — {upi_probs.get('legitimate', 100.0):.1f}% legitimate"
+
+            return render_template('index.html',
+                                   prediction_text=pred_text,
+                                   result_class=result_cls,
+                                   probabilities=upi_probs,
+                                   darkweb_report=None,
+                                   intel=None,
+                                   final_url=final_url,
+                                   parsed_upi=parsed_upi,
+                                   upi_trusted=upi_trusted)
 
         try:
             # Normalize input and resolve short links early to analyze the final destination

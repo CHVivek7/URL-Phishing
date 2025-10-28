@@ -201,6 +201,20 @@
             opacity: 0.95;
             pointer-events: none;
         }
+        /* Allow very long URLs (like UPI/QR strings) to wrap inside their container */
+        .break-url {
+            word-break: break-all; /* break long continuous strings */
+            overflow-wrap: anywhere; /* newer property to allow breaks in many browsers */
+        }
+        .upi-details {
+            background: #f1f7ff;
+            border: 1px solid #cfe2ff;
+            padding: 12px;
+            border-radius: 6px;
+            margin-top: 10px;
+        }
+        .upi-details ul { margin: 0; padding-left: 1rem; }
+        .upi-details li { margin-bottom: 6px; }
         
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
@@ -253,8 +267,24 @@
                 <!-- <pre class="darkweb-report">{{ summary_text }}</pre> -->
                  {% if final_url %}
             <div class="mt-2">
-                <span style="white-space:nowrap;"><strong>🔗 Final URL:</strong> <span style="color:#000; text-decoration:none;">{{ final_url }}</span></span>
+                <strong>🔗 Final URL:</strong>
+                <div class="mt-1"><span class="break-url" style="color:#000; text-decoration:none;">{{ final_url }}</span></div>
             </div>
+            {% if parsed_upi %}
+            <div class="upi-details">
+                <h6 class="mb-2">💳 UPI Payment Details</h6>
+                <ul>
+                    {% for k, v in parsed_upi.items() %}
+                    <li><strong>{{ k|upper }}:</strong> {{ v }}</li>
+                    {% endfor %}
+                </ul>
+                {% if upi_trusted %}
+                <div class="mt-2 text-success">Trusted payee (whitelisted)</div>
+                {% else %}
+                <div class="mt-2 text-warning">Not in trusted list — verify payee before sending payment.</div>
+                {% endif %}
+            </div>
+                {% endif %}
             {% endif %}
                 {# Show progress bars under the summary text as well when probabilities are present #}
                 {% if probabilities %}
@@ -291,7 +321,21 @@
             {% if final_url %}
             <div class="mt-2">
                 <strong>🔗 Final URL:</strong>
-                <div><a href="{{ final_url }}" target="_blank">{{ final_url }}</a></div>
+                <div class="mt-1"><a class="break-url" href="{{ final_url }}" target="_blank">{{ final_url }}</a></div>
+            </div>
+            {% if parsed_upi %}
+            <div class="upi-details">
+                <h6 class="mb-2">💳 UPI Payment Details</h6>
+                <ul>
+                    {% for k, v in parsed_upi.items() %}
+                    <li><strong>{{ k|upper }}:</strong> {{ v }}</li>
+                    {% endfor %}
+                </ul>
+                {% if upi_trusted %}
+                <div class="mt-2 text-success">Trusted payee (whitelisted)</div>
+                {% else %}
+                <div class="mt-2 text-warning">Not in trusted list — verify payee before sending payment.</div>
+                {% endif %}
             </div>
             {% endif %}
 
@@ -340,6 +384,7 @@
             {% endif %}
             {% endif %}
         </div>
+        {% endif %}
         {% endif %}
     </div>
 
@@ -482,9 +527,18 @@
             .then(function(stream) {
                 const cameraPreview = document.getElementById('cameraPreview');
                 cameraPreview.srcObject = stream;
+                // Show modal and start continuous scanning for QR codes
                 cameraModal.show();
-                
+
+                // Start auto-scanning once the video is playing
+                cameraPreview.addEventListener('loadedmetadata', function onmeta() {
+                    cameraPreview.removeEventListener('loadedmetadata', onmeta);
+                    startCameraScanning(cameraPreview);
+                });
+
                 cameraModal._element.addEventListener('hidden.bs.modal', function() {
+                    // Stop scanning and camera tracks when modal is hidden
+                    stopCameraScanning();
                     const tracks = cameraPreview.srcObject?.getTracks();
                     tracks?.forEach(track => track.stop());
                     cameraPreview.srcObject = null;
@@ -518,6 +572,59 @@
                 cameraModal.hide();
             } else {
                 alert("No QR code found. Please try again.");
+            }
+        }
+
+        // --- Auto-scanning helpers for camera modal ---
+        let _cameraScanInterval = null;
+        let _cameraScanCanvas = null;
+
+        function startCameraScanning(videoEl) {
+            try {
+                // Prevent multiple intervals
+                stopCameraScanning();
+
+                _cameraScanCanvas = document.createElement('canvas');
+                const ctx = _cameraScanCanvas.getContext('2d');
+
+                _cameraScanInterval = setInterval(() => {
+                    try {
+                        if (!videoEl || videoEl.readyState !== videoEl.HAVE_ENOUGH_DATA) return;
+                        _cameraScanCanvas.width = videoEl.videoWidth;
+                        _cameraScanCanvas.height = videoEl.videoHeight;
+                        ctx.drawImage(videoEl, 0, 0, _cameraScanCanvas.width, _cameraScanCanvas.height);
+                        const imageData = ctx.getImageData(0, 0, _cameraScanCanvas.width, _cameraScanCanvas.height);
+                        const code = jsQR(imageData.data, imageData.width, imageData.height);
+                        if (code) {
+                            // Found a QR code: populate fields, stop camera and close modal
+                            extractedUrlInput.value = code.data;
+                            urlInput.value = code.data;
+                            showPreview(_cameraScanCanvas.toDataURL('image/jpeg'));
+                            stopCameraScanning();
+                            const tracks = videoEl.srcObject?.getTracks() || [];
+                            tracks.forEach(track => track.stop());
+                            videoEl.srcObject = null;
+                            cameraModal.hide();
+                        }
+                    } catch (err) {
+                        // ignore transient errors during scanning
+                        console.debug('scan error', err);
+                    }
+                }, 250); // scan every 250ms
+            } catch (err) {
+                console.error('Failed to start camera scanning', err);
+            }
+        }
+
+        function stopCameraScanning() {
+            try {
+                if (_cameraScanInterval) {
+                    clearInterval(_cameraScanInterval);
+                    _cameraScanInterval = null;
+                }
+                _cameraScanCanvas = null;
+            } catch (err) {
+                // ignore
             }
         }
         
